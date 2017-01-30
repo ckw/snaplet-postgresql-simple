@@ -32,6 +32,7 @@ automatically be created for you the first time you run your application.
 
 module Snap.Snaplet.Auth.Backends.PostgresqlSimple
   ( initPostgresAuth
+  , bleep
   ) where
 
 ------------------------------------------------------------------------------
@@ -61,6 +62,8 @@ import           Web.ClientSession
 import           Paths_snaplet_postgresql_simple
 ------------------------------------------------------------------------------
 
+bleep :: Text
+bleep = "yo i'm a function"
 
 data PostgresAuthManager = PostgresAuthManager
     { pamTable    :: AuthTable
