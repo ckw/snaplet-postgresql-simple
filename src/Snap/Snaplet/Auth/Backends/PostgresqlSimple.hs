@@ -39,6 +39,7 @@ module Snap.Snaplet.Auth.Backends.PostgresqlSimple
 import           Prelude
 import           Control.Applicative
 import qualified Control.Exception as E
+import qualified Data.Vector as V
 import           Control.Exception (Handler(..), SomeException(..))
 import           Control.Lens
 import           Control.Monad
@@ -135,6 +136,9 @@ instance FromField UserId where
 instance FromField Password where
     fromField f v = Encrypted <$> fromField f v
 
+instance FromField Role where
+    fromField f v = Role <$> fromField f v
+
 instance FromRow AuthUser where
     fromRow =
         AuthUser
@@ -177,7 +181,7 @@ instance FromRow AuthUser where
         !_userUpdatedAt        = field
         !_userResetToken       = field
         !_userResetRequestedAt = field
-        !_userRoles            = pure []
+        !_userRoles            = V.toList <$> field
         !_userMeta             = pure HM.empty
 
 
@@ -285,27 +289,43 @@ saveQuery atable u@AuthUser{..} = maybe insertQuery updateQuery userId
                              , ") VALUES ("
                              , T.intercalate "," vals
                              , ") RETURNING "
-                             , T.intercalate "," (map (fst . ($atable) . fst) colDef)
+                             , T.intercalate "," (map (getColumnName atable) colDef)
+                             , ", '{}' ::Text[] roles"
                              ]
                    , params)
     qval f  = fst (f atable) `T.append` " = ?"
     updateQuery uid =
-        (T.concat [ "UPDATE "
-                  , tblName atable
-                  , " SET "
-                  , T.intercalate "," (map (qval . fst) $ tail colDef)
-                  , " WHERE "
-                  , fst (colId atable)
-                  , " = ? RETURNING "
-                  , T.intercalate "," (map (fst . ($atable) . fst) colDef)
+        (T.concat [ "WITH us AS "
+                  ,   "(UPDATE "
+                  ,   tblName atable
+                  ,   " SET "
+                  ,   T.intercalate "," (map (qval . fst) $ tail colDef)
+                  ,   " WHERE "
+                  ,   fst (colId atable)
+                  ,   " = ? RETURNING "
+                  ,   T.intercalate "," (map (getColumnName atable) colDef)
+                  ,   "),"
+                  , "rs AS "
+                  ,   "(SELECT ur.user_id, array_agg(r.name) roles "
+                  ,    "FROM exoteric.user_role ur "
+                  ,    "JOIN exoteric.role r ON ur.role_id = r.id "
+                  ,    "WHERE ur.user_id IN (SELECT id FROM us) "
+                  ,    "GROUP BY ur.user_id"
+                  ,   ")"
+                  , "SELECT "
+                  , T.intercalate "," updateCols
+                  , " FROM us JOIN rs ON us.id = rs.user_id"
                   ]
         , params ++ [P.toField $ unUid uid])
-    cols = map (fst . ($atable) . fst) $ tail colDef
+    cols = map (getColumnName atable) $ tail colDef
     vals = map (const "?") cols
     params = map (($u) . snd) $ tail colDef
+    updateCols = map (mappend "us." . getColumnName atable) colDef ++ ["rs.roles"]
 
+getColumnName ::AuthTable -> (AuthTable -> (Text, Text), AuthUser -> P.Action) -> Text
+getColumnName at (f, _) = fst $ f at
 
---onFailure :: Monad m => E.SomeException -> m (Either AuthFailure a)
+onFailure :: [E.Handler (Either AuthFailure a)]
 onFailure = [ Handler (\(e :: SqlError) -> handleSqlError e)
             , Handler (\(e :: SomeException) -> return $ Left $ AuthError $ show e)
             ]
@@ -328,42 +348,54 @@ instance IAuthBackend PostgresAuthManager where
 
     lookupByUserId PostgresAuthManager{..} uid = do
         let q = Query $ T.encodeUtf8 $ T.concat
-                [ "select ", T.intercalate "," cols, " from "
+                [ "SELECT ", T.intercalate "," cols, ","
+                , "array("
+                ,   "SELECT r.name FROM exoteric.user_role ur "
+                ,   "JOIN exoteric.role r ON ur.role_id = r.id WHERE user_id = ?)"
+                , " FROM "
                 , tblName pamTable
-                , " where "
+                , " WHERE "
                 , fst (colId pamTable)
                 , " = ?"
                 ]
-        querySingle pamConn q [unUid uid]
-      where cols = map (fst . ($pamTable) . fst) colDef
+        querySingle pamConn q [unUid uid, unUid uid]
+      where cols = map (getColumnName pamTable) colDef
 
     lookupByLogin PostgresAuthManager{..} login = do
         let q = Query $ T.encodeUtf8 $ T.concat
-                [ "select ", T.intercalate "," cols, " from "
+                [ "WITH idFromLogin AS "
+                ,   "(SELECT id from exoteric.user WHERE login = ?) "
+                , "SELECT ", T.intercalate "," cols, ","
+                , "array("
+                ,   "SELECT r.name FROM exoteric.user_role ur "
+                ,   "JOIN exoteric.role r ON ur.role_id = r.id "
+                ,   "WHERE user_id = idFromLogin) "
+                , "FROM "
                 , tblName pamTable
-                , " where "
+                , " WHERE "
                 , fst (colLogin pamTable)
                 , " = ?"
                 ]
         querySingle pamConn q [login]
-      where cols = map (fst . ($pamTable) . fst) colDef
+      where cols = map (getColumnName pamTable) colDef
 
     lookupByRememberToken PostgresAuthManager{..} token = do
         let q = Query $ T.encodeUtf8 $ T.concat
-                [ "select ", T.intercalate "," cols, " from "
+                [ "SELECT ", T.intercalate "," cols
+                , " FROM "
                 , tblName pamTable
-                , " where "
+                , " WHERE "
                 , fst (colRememberToken pamTable)
                 , " = ?"
                 ]
         querySingle pamConn q [token]
-      where cols = map (fst . ($pamTable) . fst) colDef
+      where cols = map (getColumnName pamTable) colDef
 
     destroy PostgresAuthManager{..} AuthUser{..} = do
         let q = Query $ T.encodeUtf8 $ T.concat
-                [ "delete from "
+                [ "DELETE FROM "
                 , tblName pamTable
-                , " where "
+                , " WHERE "
                 , fst (colLogin pamTable)
                 , " = ?"
                 ]
