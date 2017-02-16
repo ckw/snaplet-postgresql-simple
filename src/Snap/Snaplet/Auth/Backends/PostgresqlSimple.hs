@@ -1,6 +1,7 @@
 {-# LANGUAGE BangPatterns      #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards   #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 {-|
 
@@ -38,11 +39,14 @@ module Snap.Snaplet.Auth.Backends.PostgresqlSimple
 import           Prelude
 import           Control.Applicative
 import qualified Control.Exception as E
+import           Control.Exception (Handler(..), SomeException(..))
 import           Control.Lens
 import           Control.Monad
 import           Control.Monad.Trans
+import           Data.ByteString as BS (isInfixOf)
 import qualified Data.Configurator as C
 import qualified Data.HashMap.Lazy as HM
+import           Data.List (isInfixOf)
 import           Data.Maybe
 import qualified Data.Text as T
 import           Data.Text (Text)
@@ -61,7 +65,6 @@ import           Web.ClientSession
 import           Paths_snaplet_postgresql_simple
 ------------------------------------------------------------------------------
 
-
 data PostgresAuthManager = PostgresAuthManager
     { pamTable    :: AuthTable
     , pamConn     :: Postgres
@@ -77,7 +80,7 @@ initPostgresAuth
   -> SnapletInit b (AuthManager b)
 initPostgresAuth sess db = makeSnaplet "postgresql-auth" desc datadir $ do
     config <- getSnapletUserConfig
-    authTable <- liftIO $ C.lookupDefault "snap_auth_user" config "authTable"
+    authTable <- liftIO $ C.lookupDefault (tblName defAuthTable) config "authTable"
     authSettings <- authSettingsFromConfig
     key <- liftIO $ getKey (asSiteKey authSettings)
     let tableDesc = defAuthTable { tblName = authTable }
@@ -223,8 +226,8 @@ data AuthTable
 defAuthTable :: AuthTable
 defAuthTable
   =  AuthTable
-  {  tblName             = "snap_auth_user"
-  ,  colId               = ("uid", "SERIAL PRIMARY KEY")
+  {  tblName             = "exoteric.user"
+  ,  colId               = ("id", "SERIAL PRIMARY KEY")
   ,  colLogin            = ("login", "text UNIQUE NOT NULL")
   ,  colEmail            = ("email", "text")
   ,  colPassword         = ("password", "text")
@@ -302,8 +305,14 @@ saveQuery atable u@AuthUser{..} = maybe insertQuery updateQuery userId
     params = map (($u) . snd) $ tail colDef
 
 
-onFailure :: Monad m => E.SomeException -> m (Either AuthFailure a)
-onFailure e = return $ Left $ AuthError $ show e
+--onFailure :: Monad m => E.SomeException -> m (Either AuthFailure a)
+onFailure = [ Handler (\(e :: SqlError) -> handleSqlError e)
+            , Handler (\(e :: SomeException) -> return $ Left $ AuthError $ show e)
+            ]
+  where handleSqlError e = if sqlState e == "23505" &&
+                            "user_login_key" `BS.isInfixOf` sqlErrorMsg e
+                         then return $ Left DuplicateLogin
+                         else return $ Left $ AuthError $ show e
 
 ------------------------------------------------------------------------------
 -- |
@@ -314,7 +323,7 @@ instance IAuthBackend PostgresAuthManager where
         let action = withConnection pamConn $ \conn -> do
                 res <- P.query conn q params
                 return $ Right $ fromMaybe u $ listToMaybe res
-        E.catch action onFailure
+        E.catches action onFailure
 
 
     lookupByUserId PostgresAuthManager{..} uid = do
