@@ -1,6 +1,7 @@
 {-# LANGUAGE BangPatterns      #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards   #-}
+{-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 {-|
@@ -57,6 +58,7 @@ import qualified Database.PostgreSQL.Simple.ToField as P
 import           Database.PostgreSQL.Simple.FromField
 import           Database.PostgreSQL.Simple.FromRow
 import           Database.PostgreSQL.Simple.Types
+import           NeatInterpolation (text)
 import           Snap
 import           Snap.Snaplet.Auth
 import           Snap.Snaplet.PostgresqlSimple
@@ -334,12 +336,15 @@ onFailure = [ Handler (\(e :: SqlError) -> handleSqlError e)
                          then return $ Left DuplicateLogin
                          else return $ Left $ AuthError $ show e
 
+
 ------------------------------------------------------------------------------
 -- |
 instance IAuthBackend PostgresAuthManager where
     save PostgresAuthManager{..} u@AuthUser{..} = do
         let (qstr, params) = saveQuery pamTable u
         let q = Query $ T.encodeUtf8 qstr
+        liftIO $ print "save"
+        liftIO $ print q
         let action = withConnection pamConn $ \conn -> do
                 res <- P.query conn q params
                 return $ Right $ fromMaybe u $ listToMaybe res
@@ -358,38 +363,67 @@ instance IAuthBackend PostgresAuthManager where
                 , fst (colId pamTable)
                 , " = ?"
                 ]
+        liftIO $ print q
+        liftIO $ print "lbui"
         querySingle pamConn q [unUid uid, unUid uid]
       where cols = map (getColumnName pamTable) colDef
 
     lookupByLogin PostgresAuthManager{..} login = do
         let q = Query $ T.encodeUtf8 $ T.concat
+        --TODO rewrite this to require only one login param
                 [ "WITH idFromLogin AS "
                 ,   "(SELECT id from exoteric.user WHERE login = ?) "
                 , "SELECT ", T.intercalate "," cols, ","
                 , "array("
                 ,   "SELECT r.name FROM exoteric.user_role ur "
                 ,   "JOIN exoteric.role r ON ur.role_id = r.id "
-                ,   "WHERE user_id = idFromLogin) "
+                ,   "WHERE user_id = (select 1 from idFromLogin)) "
                 , "FROM "
                 , tblName pamTable
                 , " WHERE "
                 , fst (colLogin pamTable)
                 , " = ?"
                 ]
-        querySingle pamConn q [login]
+        liftIO $ print q
+        liftIO $ print "lbl"
+        querySingle pamConn q [login, login]
       where cols = map (getColumnName pamTable) colDef
 
     lookupByRememberToken PostgresAuthManager{..} token = do
-        let q = Query $ T.encodeUtf8 $ T.concat
-                [ "SELECT ", T.intercalate "," cols
-                , " FROM "
-                , tblName pamTable
-                , " WHERE "
-                , fst (colRememberToken pamTable)
-                , " = ?"
-                ]
-        querySingle pamConn q [token]
+        liftIO $ print "lbrt"
+        liftIO $ print q
+        querySingle pamConn q [token, token]
       where cols = map (getColumnName pamTable) colDef
+            q = Query $ T.encodeUtf8 $
+                [text|
+                    WITH roles as (SELECT r.name
+                        FROM exoteric.user_role ur
+                        JOIN exoteric.role r ON ur.role_id = r.id
+                        WHERE user_id = (SELECT coalesce(min(id), -1)
+                          FROM exoteric.user
+                          WHERE remember_token = ?))
+                    SELECT id,
+                           login,
+                           email,
+                           password,
+                           activated_at,
+                           suspended_at,
+                           remember_token,
+                           login_count,
+                           failed_login_count,
+                           locked_out_until,
+                           current_login_at,
+                           last_login_at,
+                           current_login_ip,
+                           last_login_ip,
+                           created_at,
+                           updated_at,
+                           reset_token,
+                           reset_requested_at,
+                           coalesce(array(select name from roles), '{}')
+                    FROM exoteric.user WHERE remember_token = ?
+                    |]
+
 
     destroy PostgresAuthManager{..} AuthUser{..} = do
         let q = Query $ T.encodeUtf8 $ T.concat

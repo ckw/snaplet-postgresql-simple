@@ -45,6 +45,7 @@ Library
     configurator               >= 0.2     && < 0.4,
     lens                       >= 3.7.6   && < 4.16,
     lifted-base                >= 0.2     && < 0.3,
+    neat-interpolation         == 0.3.2.1,
     monad-control              >= 1.0     && < 1.1,
     mtl                        >= 2       && < 2.3,
     postgresql-simple          >= 0.3     && < 0.6,
