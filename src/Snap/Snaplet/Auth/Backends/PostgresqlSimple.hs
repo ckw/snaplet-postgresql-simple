@@ -328,8 +328,8 @@ getColumnName ::AuthTable -> (AuthTable -> (Text, Text), AuthUser -> P.Action) -
 getColumnName at (f, _) = fst $ f at
 
 onFailure :: [E.Handler (Either AuthFailure a)]
-onFailure = [ Handler (\(e :: SqlError) -> handleSqlError e)
-            , Handler (\(e :: SomeException) -> return $ Left $ AuthError $ show e)
+onFailure = [ E.Handler (\(e :: SqlError) -> handleSqlError e)
+            , E.Handler (\(e :: SomeException) -> return $ Left $ AuthError $ show e)
             ]
   where handleSqlError e = if sqlState e == "23505" &&
                             "user_login_key" `BS.isInfixOf` sqlErrorMsg e
@@ -343,8 +343,6 @@ instance IAuthBackend PostgresAuthManager where
     save PostgresAuthManager{..} u@AuthUser{..} = do
         let (qstr, params) = saveQuery pamTable u
         let q = Query $ T.encodeUtf8 qstr
-        liftIO $ print "save"
-        liftIO $ print q
         let action = withConnection pamConn $ \conn -> do
                 res <- P.query conn q params
                 return $ Right $ fromMaybe u $ listToMaybe res
@@ -363,8 +361,6 @@ instance IAuthBackend PostgresAuthManager where
                 , fst (colId pamTable)
                 , " = ?"
                 ]
-        liftIO $ print q
-        liftIO $ print "lbui"
         querySingle pamConn q [unUid uid, unUid uid]
       where cols = map (getColumnName pamTable) colDef
 
@@ -384,14 +380,10 @@ instance IAuthBackend PostgresAuthManager where
                 , fst (colLogin pamTable)
                 , " = ?"
                 ]
-        liftIO $ print q
-        liftIO $ print "lbl"
         querySingle pamConn q [login, login]
       where cols = map (getColumnName pamTable) colDef
 
     lookupByRememberToken PostgresAuthManager{..} token = do
-        liftIO $ print "lbrt"
-        liftIO $ print q
         querySingle pamConn q [token, token]
       where cols = map (getColumnName pamTable) colDef
             q = Query $ T.encodeUtf8 $
